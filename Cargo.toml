@@ -1,0 +1,13 @@
+[package]
+name = "fm-bindings"
+version = "0.1.0"
+edition = "2024"
+authors = ["Remi d'Almeida <remi@geta.dev>"]
+license = "MIT OR Apache-2.0"
+description = "Rust bindings for Apple's Foundation Models framework"
+repository = "https://github.com/remdalm/fm-bindings"
+homepage = "https://github.com/remdalm/fm-bindings"
+documentation = "https://docs.rs/fm-bindings"
+readme = "README.md"
+keywords = ["apple", "ios", "macos", "ai", "llm"]
+categories = ["api-bindings", "os::macos-apis", "science"]

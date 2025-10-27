@@ -1,0 +1,108 @@
+# name: Integration Tests
+
+# on:
+#   pull_request:
+#     branches: [main]
+#   workflow_dispatch:
+
+# jobs:
+#   test:
+#     name: Test on ${{ matrix.platform }}
+#     runs-on: macos-26
+
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         include:
+#           - platform: macOS
+#             target: aarch64-apple-darwin
+#             requires_simulator: false
+#           - platform: iOS
+#             target: aarch64-apple-ios-sim
+#             requires_simulator: true
+
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       - name: Install Rust toolchain
+#         uses: dtolnay/rust-toolchain@stable
+#         with:
+#           targets: ${{ matrix.target }}
+
+#       - name: Check system version
+#         run: |
+#           sw_vers
+#           echo "Testing on macOS $(sw_vers -productVersion)"
+
+#       - name: Check Xcode version (iOS only)
+#         if: matrix.requires_simulator
+#         run: |
+#           xcodebuild -version
+#           echo "Available iOS simulators:"
+#           xcrun simctl list devices available ios
+
+#       - name: Select and boot iOS Simulator
+#         if: matrix.requires_simulator
+#         id: select_sim
+#         run: |
+#           # Get the latest iPhone simulator with iOS 26+
+#           DEVICE=$(xcrun simctl list devices available ios | grep "iPhone" | grep -E "iOS (26|27|28|29|30)" | tail -n 1 | sed -E 's/(.+)\(([A-F0-9-]+)\).*/\2/')
+#           if [ -z "$DEVICE" ]; then
+#             echo "No suitable iOS 26+ simulator found, trying any available iPhone simulator"
+#             DEVICE=$(xcrun simctl list devices available ios | grep "iPhone" | tail -n 1 | sed -E 's/(.+)\(([A-F0-9-]+)\).*/\2/')
+#           fi
+#           echo "device_id=$DEVICE" >> $GITHUB_OUTPUT
+#           echo "Selected simulator: $DEVICE"
+
+#           # Boot the simulator
+#           xcrun simctl boot "$DEVICE" || true
+#           xcrun simctl bootstatus "$DEVICE"
+
+#       - name: Cache cargo registry
+#         uses: actions/cache@v4
+#         with:
+#           path: ~/.cargo/registry
+#           key: ${{ runner.os }}-${{ matrix.platform }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+#       - name: Cache cargo index
+#         uses: actions/cache@v4
+#         with:
+#           path: ~/.cargo/git
+#           key: ${{ runner.os }}-${{ matrix.platform }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+#       - name: Cache cargo build
+#         uses: actions/cache@v4
+#         with:
+#           path: target
+#           key: ${{ runner.os }}-${{ matrix.platform }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+#       - name: Build
+#         run: cargo build --target ${{ matrix.target }} --verbose
+
+#       - name: Run tests
+#         run: cargo test --target ${{ matrix.target }} --verbose
+#         continue-on-error: true
+#         id: test_run
+#         env:
+#           SIMCTL_CHILD_IOSDEVICE: ${{ steps.select_sim.outputs.device_id }}
+
+#       - name: Check test results
+#         if: steps.test_run.outcome == 'failure'
+#         run: |
+#           echo "⚠️  Tests failed on ${{ matrix.platform }}. This may be expected if:"
+#           echo "  - ${{ matrix.platform }} version < 26.0 (required for Foundation Models framework)"
+#           echo "  - Apple Intelligence is not enabled on the runner"
+#           echo "  - Foundation Models framework is not available"
+#           if [ "${{ matrix.requires_simulator }}" = "true" ]; then
+#             echo "  - The simulator doesn't support on-device AI features"
+#             echo ""
+#             echo "Note: Apple Intelligence may not be available in iOS simulators."
+#           fi
+#           echo ""
+#           echo "These tests require ${{ matrix.platform }} 26+ with Apple Intelligence enabled."
+#           exit 1
+
+#       - name: Shutdown simulator
+#         if: always() && matrix.requires_simulator
+#         run: xcrun simctl shutdown ${{ steps.select_sim.outputs.device_id }} || true
