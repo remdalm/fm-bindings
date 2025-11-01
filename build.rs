@@ -7,6 +7,13 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    // Skip Swift compilation when building docs on docs.rs
+    // docs.rs builds in a Linux container without Swift toolchain
+    if env::var("DOCS_RS").is_ok() {
+        println!("cargo:warning=Building on docs.rs - skipping Swift compilation");
+        return;
+    }
+
     // Rerun if the Swift source changes
     println!("cargo:rerun-if-changed=swift/FoundationModelsFFI.swift");
 
