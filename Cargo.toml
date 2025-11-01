@@ -11,3 +11,8 @@ documentation = "https://docs.rs/fm-bindings"
 readme = "README.md"
 keywords = ["apple", "ios", "macos", "ai", "llm"]
 categories = ["api-bindings", "os::macos-apis", "science"]
+
+[package.metadata.docs.rs]
+all-features = true
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-apple-ios"]
