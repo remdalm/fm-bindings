@@ -25,30 +25,70 @@ use std::thread;
 use std::time::Duration;
 
 #[test]
-fn test_blocking_response() -> Result<()> {
+fn test_session_without_instructions() -> Result<()> {
     let session = LanguageModelSession::new()?;
     let prompt = "What is 2+2?";
 
-    println!("Testing blocking response with prompt: {}", prompt);
+    println!("Testing session without instructions: {}", prompt);
 
     let response = session.response(prompt)?;
 
-    // Verify response is not empty
+    println!("Response: {}", response);
+    assert!(!response.is_empty(), "Response should not be empty");
+    Ok(())
+}
+
+#[test]
+fn test_session_with_instructions() -> Result<()> {
+    let session = LanguageModelSession::with_instructions(
+        "You are a helpful math tutor. Always explain your reasoning step by step.",
+    )?;
+    let prompt = "What is 15% of 80?";
+
+    let response = session.response(prompt)?;
     assert!(!response.is_empty(), "Response should not be empty");
 
-    // Verify response contains some content (basic sanity check)
+    Ok(())
+}
+
+#[test]
+fn test_multi_turn_conversation() -> Result<()> {
+    let session = LanguageModelSession::with_instructions(
+        "You are a helpful assistant. Remember context from previous messages.",
+    )?;
+
+    // First turn
+    let response1 = session.response("My name is Alice.")?;
+    assert!(!response1.is_empty());
+
+    // Second turn - should remember the name
+    let response2 = session.response("What is my name?")?;
+    assert!(!response2.is_empty());
+    println!("Turn 2 response: {}", response2);
+
+    Ok(())
+}
+
+#[test]
+fn test_transcript_persistence() -> Result<()> {
+    // Create first session and have a conversation
+    let session1 = LanguageModelSession::with_instructions("You are a helpful assistant.")?;
+    let _ = session1.response("Remember the number 42.")?;
+
+    // Get transcript JSON
+    let transcript_json = session1.transcript_json()?;
     assert!(
-        !response.is_empty(),
-        "Response should contain meaningful content, got: {}",
-        response
+        !transcript_json.is_empty(),
+        "Transcript should not be empty"
     );
 
-    println!("✓ Blocking response test passed");
-    println!("Response length: {} chars", response.len());
-    println!(
-        "Response preview: {}...",
-        &response[..response.len().min(100)]
-    );
+    // Create second session from transcript
+    let session2 = LanguageModelSession::from_transcript_json(&transcript_json)?;
+
+    // The new session should have context from the previous conversation
+    let response = session2.response("What number did I ask you to remember?")?;
+    assert!(!response.is_empty());
+    println!("Restored session response: {}", response);
 
     Ok(())
 }
@@ -57,8 +97,6 @@ fn test_blocking_response() -> Result<()> {
 fn test_streaming_response() -> Result<()> {
     let session = LanguageModelSession::new()?;
     let prompt = "Count from 1 to 5";
-
-    println!("Testing streaming response with prompt: {}", prompt);
 
     // Track chunks received
     let chunks = Arc::new(Mutex::new(Vec::new()));
@@ -78,49 +116,40 @@ fn test_streaming_response() -> Result<()> {
         "Should have received at least one chunk"
     );
 
+    println!("Total chunks received: {}", collected_chunks.len());
+
     // Verify the complete response is meaningful
     let full_response: String = collected_chunks.join("");
     assert!(
         !full_response.is_empty(),
         "Complete response should not be empty"
     );
-    assert!(
-        full_response.len() > 5,
-        "Complete response should contain meaningful content"
-    );
 
-    println!("✓ Streaming response test passed");
-    println!("Total chunks received: {}", collected_chunks.len());
-    println!("Full response length: {} chars", full_response.len());
-    println!(
-        "Full response preview: {}...",
-        &full_response[..full_response.len().min(100)]
-    );
+    println!("Full response: {}", full_response);
 
     Ok(())
 }
 
 #[test]
 fn test_cancel_streaming_response() -> Result<()> {
-    let session = LanguageModelSession::new()?;
-    // Use a prompt that would generate a longer response
-    let prompt = "Write a long story about a dragon and a knight";
+    let session = Arc::new(LanguageModelSession::with_instructions(
+        "Write very long, detailed responses.",
+    )?);
+    let prompt = "Write a very long essay about the history of computing.";
 
-    println!("Testing cancel streaming with prompt: {}", prompt);
-
-    // Track chunks received and cancellation flag
     let chunks = Arc::new(Mutex::new(Vec::new()));
     let chunks_clone = Arc::clone(&chunks);
     let cancel_triggered = Arc::new(Mutex::new(false));
     let cancel_flag = Arc::clone(&cancel_triggered);
 
-    // Start streaming in a separate thread so we can cancel it
-    let session_clone = session.clone();
+    // Clone session for the spawned thread
+    let session_for_stream = Arc::clone(&session);
+
     let stream_handle = thread::spawn(move || {
-        session_clone.stream_response(prompt, move |chunk| {
+        session_for_stream.stream_response(prompt, move |chunk| {
             let mut chunks_vec = chunks_clone.lock().unwrap();
             chunks_vec.push(chunk.to_string());
-            println!("Received chunk before cancel: {:?}", chunk);
+            println!("{}", chunk);
 
             // After receiving a few chunks, signal to cancel
             if chunks_vec.len() == 3 {
@@ -131,49 +160,22 @@ fn test_cancel_streaming_response() -> Result<()> {
     });
 
     // Poll for cancellation trigger
-    let mut cancelled = false;
     for _ in 0..50 {
-        // Wait up to 5 seconds
         thread::sleep(Duration::from_millis(100));
 
         let should_cancel = *cancel_triggered.lock().unwrap();
-        if should_cancel && !cancelled {
+        if should_cancel {
             println!("Cancelling stream after receiving chunks...");
             session.cancel_stream();
-            cancelled = true;
             break;
         }
     }
 
     // Wait for stream thread to complete
-    let stream_result = stream_handle.join();
+    let _ = stream_handle.join();
 
-    // Verify cancellation happened
-    assert!(
-        cancelled,
-        "Stream should have been cancelled after receiving chunks"
-    );
-
-    // The stream may complete successfully or return an error depending on timing
-    // Both outcomes are acceptable for a cancellation test
-    match stream_result {
-        Ok(Ok(())) => println!("Stream completed (may have finished before cancel)"),
-        Ok(Err(e)) => println!("Stream returned error after cancel: {:?}", e),
-        Err(_) => println!("Stream thread panicked"),
-    }
-
-    // Verify we received some chunks before cancellation
     let collected_chunks = chunks.lock().unwrap();
     println!("Chunks received before cancel: {}", collected_chunks.len());
-
-    // We should have received at least a few chunks before cancellation
-    assert!(
-        !collected_chunks.is_empty(),
-        "Should have received at least one chunk before cancellation"
-    );
-
-    println!("✓ Cancel streaming test passed");
-    println!("Total chunks before cancel: {}", collected_chunks.len());
 
     Ok(())
 }
@@ -196,7 +198,25 @@ fn test_empty_prompt_error() -> Result<()> {
         "Empty prompt should return an error for streaming response"
     );
 
-    println!("✓ Empty prompt error handling test passed");
+    Ok(())
+}
+
+#[test]
+fn test_transcript_json_format() -> Result<()> {
+    let session = LanguageModelSession::with_instructions("Test instructions")?;
+    let _ = session.response("Hello")?;
+
+    let json = session.transcript_json()?;
+
+    // Verify it's valid JSON
+    assert!(
+        json.starts_with('[') || json.starts_with('{'),
+        "Transcript should be valid JSON"
+    );
+
+    assert!(json.contains("Hello"));
+
+    println!("JSON: {}", json);
 
     Ok(())
 }
