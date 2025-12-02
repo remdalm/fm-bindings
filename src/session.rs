@@ -213,8 +213,7 @@ impl LanguageModelSession {
     ///
     /// # Errors
     ///
-    /// * `Error::ModelNotAvailable` - If the Foundation Model is not available
-    /// * `Error::InvalidInput` - If the prompt is empty or invalid
+    /// * `Error::InvalidInput` - If the prompt is empty or contains a null byte
     /// * `Error::GenerationError` - If an error occurs during generation
     ///
     /// # Examples
@@ -233,20 +232,19 @@ impl LanguageModelSession {
             return Err(Error::InvalidInput("Prompt cannot be empty".into()));
         }
 
-        // Create C string for FFI
         let c_prompt = CString::new(prompt)
             .map_err(|_| Error::InvalidInput("Prompt contains null byte".into()))?;
 
         // Shared state for collecting response
         let state = Arc::new((Mutex::new(ResponseState::default()), Condvar::new()));
-        let state_clone = Arc::clone(&state);
+        let state_ptr = Box::into_raw(Box::new(Arc::clone(&state)));
 
-        // Call Swift FFI with blocking response mode
         unsafe {
-            ffi::fm_response(
+            ffi::fm_session_response(
+                self.ptr.as_ptr(),
                 c_prompt.as_ptr(),
-                Box::into_raw(Box::new(state_clone)) as *mut _,
-                response_callback,
+                state_ptr as *mut _,
+                response_chunk_callback,
                 response_done_callback,
                 response_error_callback,
             );
@@ -273,8 +271,8 @@ impl LanguageModelSession {
     /// Generates a streaming response to the given prompt
     ///
     /// This method calls the provided callback for each chunk as it's generated,
-    /// providing immediate feedback to the user. The callback receives string slices
-    /// containing incremental text deltas.
+    /// providing immediate feedback to the user. The prompt and complete response
+    /// are added to the session transcript.
     ///
     /// # Arguments
     ///
@@ -283,8 +281,7 @@ impl LanguageModelSession {
     ///
     /// # Errors
     ///
-    /// * `Error::ModelNotAvailable` - If the Foundation Model is not available
-    /// * `Error::InvalidInput` - If the prompt is empty or invalid
+    /// * `Error::InvalidInput` - If the prompt is empty or contains a null byte
     /// * `Error::GenerationError` - If an error occurs during generation
     ///
     /// # Examples
@@ -312,22 +309,21 @@ impl LanguageModelSession {
             return Err(Error::InvalidInput("Prompt cannot be empty".into()));
         }
 
-        // Create C string for FFI
         let c_prompt = CString::new(prompt)
             .map_err(|_| Error::InvalidInput("Prompt contains null byte".into()))?;
 
         // Shared state for streaming
         let state = Arc::new((Mutex::new(StreamState::default()), Condvar::new()));
-        let state_clone = Arc::clone(&state);
+        let user_data = Box::into_raw(Box::new((
+            Arc::clone(&state),
+            Box::new(on_chunk) as Box<dyn FnMut(&str)>,
+        )));
 
-        // Call Swift FFI with streaming mode
         unsafe {
-            ffi::fm_start_stream(
+            ffi::fm_session_stream(
+                self.ptr.as_ptr(),
                 c_prompt.as_ptr(),
-                Box::into_raw(Box::new((
-                    state_clone,
-                    Box::new(on_chunk) as Box<dyn FnMut(&str)>,
-                ))) as *mut _,
+                user_data as *mut _,
                 stream_chunk_callback,
                 stream_done_callback,
                 stream_error_callback,
@@ -354,47 +350,64 @@ impl LanguageModelSession {
 
     /// Cancels the current streaming response
     ///
-    /// This method immediately cancels any ongoing streaming operation started with
-    /// `stream_response`. The streaming callback will stop receiving tokens and the
-    /// stream will complete with the tokens received so far.
+    /// This method immediately cancels any ongoing streaming operation.
+    /// The streaming callback will stop receiving tokens and the stream
+    /// will complete with the tokens received so far.
     ///
     /// # Notes
     ///
-    /// * This is a global operation that cancels the current stream
     /// * Safe to call even if no stream is active
-    /// * After cancellation, the `stream_response` method will return normally
+    /// * After cancellation, `stream_response` will return normally
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use fm_bindings::LanguageModelSession;
+    /// # use std::sync::Arc;
     /// # use std::thread;
     /// # use std::time::Duration;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let session = LanguageModelSession::new()?;
-    /// let session_clone = session.clone();
+    /// let session = Arc::new(LanguageModelSession::new()?);
+    /// let session_clone = Arc::clone(&session);
     ///
     /// // Start streaming in a thread
-    /// thread::spawn(move || {
-    ///     session_clone.stream_response("Long prompt...", |chunk| {
+    /// let handle = thread::spawn(move || {
+    ///     session_clone.stream_response("Write a long essay...", |chunk| {
     ///         print!("{}", chunk);
-    ///     }).ok();
+    ///     })
     /// });
     ///
     /// // Cancel after a delay
     /// thread::sleep(Duration::from_secs(2));
     /// session.cancel_stream();
+    ///
+    /// handle.join().unwrap()?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn cancel_stream(&self) {
         unsafe {
-            ffi::fm_stop_stream();
+            ffi::fm_session_cancel_stream(self.ptr.as_ptr());
         }
     }
 }
 
+impl Drop for LanguageModelSession {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::fm_destroy_session(self.ptr.as_ptr());
+        }
+    }
+}
+
+// Note: We intentionally don't implement Clone.
+// To create a session with the same transcript, use:
+//   let json = session.transcript_json()?;
+//   let new_session = LanguageModelSession::from_transcript_json(&json)?;
+
+// =============================================================================
 // Internal State Types
+// =============================================================================
 
 #[derive(Default)]
 struct ResponseState {
