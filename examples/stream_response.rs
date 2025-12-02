@@ -1,4 +1,3 @@
-// examples/stream_response.rs
 // Example: Streaming response generation
 //
 // This example demonstrates using the `stream_response()` method to get
@@ -13,9 +12,11 @@ use std::io::{self, Write};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Foundation Models - Streaming Response Example ===\n");
 
-    // Create a new session
+    // Create a new session with instructions
     println!("Creating session...");
-    let session = LanguageModelSession::new()?;
+    let session = LanguageModelSession::with_instructions(
+        "You are a creative storyteller. Write engaging, vivid narratives.",
+    )?;
     println!("Session created!\n");
 
     // Define the prompt

@@ -1,8 +1,7 @@
-// examples/response.rs
-// Example: Blocking response generation
+// Example: Blocking response generation with instructions
 //
 // This example demonstrates using the `response()` method to get a complete
-// response from the Foundation Model. The method blocks until generation is complete.
+// response from the Foundation Model, with custom instructions.
 //
 // Usage: cargo run --example response
 
@@ -11,9 +10,11 @@ use fm_bindings::LanguageModelSession;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Foundation Models - Blocking Response Example ===\n");
 
-    // Create a new session
-    println!("Creating session...");
-    let session = LanguageModelSession::new()?;
+    // Create a new session with instructions
+    println!("Creating session with instructions...");
+    let session = LanguageModelSession::with_instructions(
+        "You are a helpful assistant. Provide concise, accurate answers.",
+    )?;
     println!("Session created!\n");
 
     // Define the prompt
