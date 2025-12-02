@@ -28,6 +28,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Print the response
     println!("Response:\n{}\n", response);
+
+    // Multi-turn conversation example
+    println!("--- Multi-turn conversation ---\n");
+
+    let follow_up = "What are its main advantages?";
+    println!("Follow-up: \"{}\"\n", follow_up);
+
+    let response2 = session.response(follow_up)?;
+    println!("Response:\n{}\n", response2);
+
     println!("=== Complete ===");
 
     Ok(())
