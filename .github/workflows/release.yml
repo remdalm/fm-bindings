@@ -30,6 +30,7 @@ jobs:
   test:
     name: Test before release
     runs-on: macos-26
+    timeout-minutes: 10
     needs: validate-version
     steps:
       - uses: actions/checkout@v5
@@ -46,6 +47,7 @@ jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: release # Optional: for enhanced security
     permissions:
       id-token: write # Required for OIDC token exchange

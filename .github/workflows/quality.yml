@@ -13,6 +13,7 @@ jobs:
   code_quality:
     name: Check formatting and Lints
     runs-on: macos-26
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - name: Rust Cache (Optimized)
@@ -24,6 +25,6 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
-      # No test possible because macos-26 runner ubuntu runners do not support Apple intelligence yet
+        # Tests skipped: requires Apple Intelligence (not available on CI runners)
       - name: Build
         run: cargo build --profile ci
