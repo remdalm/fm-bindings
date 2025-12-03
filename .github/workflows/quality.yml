@@ -1,0 +1,29 @@
+name: Code Quality
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  code_quality:
+    name: Check formatting and Lints
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rust Cache (Optimized)
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+          cache-all-crates: true
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      # No test possible because macos-26 runner ubuntu runners do not support Apple intelligence yet
+      - name: Build
+        run: cargo build --profile ci
