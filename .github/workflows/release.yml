@@ -9,7 +9,7 @@ env:
 jobs:
   test:
     name: Test before release
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
       - name: Rust Cache

@@ -1,4 +1,4 @@
-name: CI
+name: Code Quality
 on:
   push:
     branches: [main]
@@ -11,8 +11,8 @@ env:
 
 jobs:
   code_quality:
-    name: Code Quality
-    runs-on: ubuntu-latest
+    name: Check formatting and Lints
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
       - name: Rust Cache (Optimized)
@@ -25,15 +25,5 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       # No test possible because macos-26 runner ubuntu runners do not support Apple intelligence yet
-  build:
-    name: Macos Build
-    runs-on: macos-26
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: true
-      - name: Build (optimized)
+      - name: Build
         run: cargo build --profile ci
