@@ -1,4 +1,3 @@
-// src/error.rs
 // Error types for Foundation Models bindings
 
 use std::fmt;
@@ -13,7 +12,7 @@ pub enum Error {
     /// The system returned an error during generation
     GenerationError(String),
 
-    /// Invalid input was provided (e.g., empty prompt)
+    /// Invalid input was provided (e.g., empty prompt, null bytes)
     InvalidInput(String),
 
     /// An internal FFI error occurred

@@ -12,12 +12,13 @@
 //!
 //! - **Blocking Response**: Get complete responses with `response()`
 //! - **Streaming Response**: Get real-time incremental updates with `stream_response()`
+//! - **Instructions**: Configure model behavior with system prompts
+//! - **Transcript Persistence**: Save and restore session state across app launches
 //! - Type-safe error handling with `Result<T, Error>`
-//! - Zero-copy FFI layer for optimal performance
 //!
 //! ## Examples
 //!
-//! ### Blocking Response
+//! ### Basic Usage
 //!
 //! ```no_run
 //! use fm_bindings::LanguageModelSession;
@@ -25,6 +26,21 @@
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let session = LanguageModelSession::new()?;
 //!     let response = session.response("What is Rust?")?;
+//!     println!("{}", response);
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### With Instructions
+//!
+//! ```no_run
+//! use fm_bindings::LanguageModelSession;
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let session = LanguageModelSession::with_instructions(
+//!         "You are a friendly assistant. Keep responses brief and helpful."
+//!     )?;
+//!     let response = session.response("Hello!")?;
 //!     println!("{}", response);
 //!     Ok(())
 //! }
@@ -45,6 +61,53 @@
 //!     })?;
 //!
 //!     println!(); // newline after stream
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Persisting Sessions
+//!
+//! ```no_run
+//! use fm_bindings::LanguageModelSession;
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // Create and use a session
+//!     let session = LanguageModelSession::with_instructions("You are a travel guide.")?;
+//!     let _ = session.response("Tell me about Paris")?;
+//!     let _ = session.response("What about the food?")?;
+//!
+//!     // Save the transcript
+//!     let transcript = session.transcript_json()?;
+//!     std::fs::write("session.json", &transcript)?;
+//!
+//!     // Later: restore the session
+//!     let saved = std::fs::read_to_string("session.json")?;
+//!     let restored = LanguageModelSession::from_transcript_json(&saved)?;
+//!
+//!     // Continue with full context
+//!     let response = restored.response("Any restaurant recommendations?")?;
+//!     println!("{}", response);
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Error Handling
+//!
+//! ```no_run
+//! use fm_bindings::{LanguageModelSession, Error};
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let session = match LanguageModelSession::new() {
+//!         Ok(s) => s,
+//!         Err(Error::ModelNotAvailable) => {
+//!             eprintln!("Apple Intelligence not enabled");
+//!             return Ok(());
+//!         }
+//!         Err(e) => return Err(e.into()),
+//!     };
+//!
+//!     let response = session.response("Hello")?;
+//!     println!("{}", response);
 //!     Ok(())
 //! }
 //! ```

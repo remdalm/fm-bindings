@@ -5,221 +5,232 @@
 import Foundation
 import FoundationModels
 
-// MARK: - Global State
-// We keep task references so we can cancel if needed
-// In production, you'd manage multiple concurrent sessions with IDs
-private var responseTask: Task<Void, Never>?
-private var streamTask: Task<Void, Never>?
+// MARK: - Availability
 
-// Locks to serialize FFI calls and prevent race conditions
-// when multiple threads call the FFI functions concurrently
-private let responseLock = NSLock()
-private let streamLock = NSLock()
-
-// MARK: - C Function Pointer Types
-// These match the callback signatures Rust will pass to us
-public typealias ChunkCallbackWithData = @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
-public typealias DoneCallbackWithData = @convention(c) (UnsafeMutableRawPointer?) -> Void
-public typealias ErrorCallbackWithData = @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
-
-// MARK: - Availability Check
-/// Checks if the Foundation Model is available on this system
-///
-/// - Returns: true if the model is available, false otherwise
-///
-/// This checks SystemLanguageModel.default.isAvailable which requires:
-/// - macOS 26+ or iOS 26+ with Apple Intelligence enabled
 @_cdecl("fm_check_availability")
 public func fm_check_availability() -> Bool {
-    let systemModel = SystemLanguageModel.default
-    return systemModel.isAvailable
+    if #available(macOS 26.0, iOS 26.0, *) {
+        return SystemLanguageModel.default.availability == .available
+    }
+    return false
 }
 
-// MARK: - Blocking Response
-/// Generates a complete response from the Foundation Model (blocking mode)
-///
-/// - Parameters:
-///   - prompt: C string with the user's prompt
-///   - userData: Opaque pointer passed to all callbacks
-///   - onChunk: Called for each chunk of text generated
-///   - onDone: Called when generation completes successfully
-///   - onError: Called if an error occurs (passes error message)
-///
-/// See: https://developer.apple.com/documentation/FoundationModels/LanguageModelSession/respond(to:)
-@_cdecl("fm_response")
-public func fm_response(
-    _ prompt: UnsafePointer<CChar>?,
-    _ userData: UnsafeMutableRawPointer?,
-    _ onChunk: ChunkCallbackWithData?,
-    _ onDone: DoneCallbackWithData?,
-    _ onError: ErrorCallbackWithData?
-) {
-    // 1. Acquire lock to serialize FFI calls
-    responseLock.lock()
-    defer { responseLock.unlock() }
+// MARK: - Session Lifecycle
 
-    // 2. Convert C string to Swift String
-    guard let promptCStr = prompt,
-          let promptString = String(utf8String: promptCStr) else {
-        "Invalid prompt".withCString { cString in
-            onError?(cString, userData)
-        }
-        return
+@_cdecl("fm_create_session")
+public func fm_create_session(
+    instructions: UnsafePointer<CChar>?
+) -> UnsafeMutableRawPointer? {
+    guard #available(macOS 26.0, iOS 26.0, *) else {
+        return nil
     }
 
-    // 3. Cancel any existing response task
-    responseTask?.cancel()
+    let session: LanguageModelSession
 
-    // 4. Create semaphore to block until async work completes
-    let semaphore = DispatchSemaphore(value: 0)
+    if let instructions = instructions {
+        let instructionsStr = String(cString: instructions)
+        session = LanguageModelSession(instructions: instructionsStr)
+    } else {
+        session = LanguageModelSession()
+    }
 
-    // 5. Start new async task to handle response generation
-    // Note: Availability is checked at session creation time in Rust
-    responseTask = Task {
-        defer { semaphore.signal() }
+    return Unmanaged.passRetained(session).toOpaque()
+}
 
+@_cdecl("fm_create_session_from_transcript")
+public func fm_create_session_from_transcript(
+    transcriptJson: UnsafePointer<CChar>
+) -> UnsafeMutableRawPointer? {
+    guard #available(macOS 26.0, iOS 26.0, *) else {
+        return nil
+    }
+
+    let jsonStr = String(cString: transcriptJson)
+
+    guard let jsonData = jsonStr.data(using: .utf8),
+        let transcript = try? JSONDecoder().decode(Transcript.self, from: jsonData)
+    else {
+        return nil
+    }
+
+    let session = LanguageModelSession(transcript: transcript)
+    return Unmanaged.passRetained(session).toOpaque()
+}
+
+@_cdecl("fm_destroy_session")
+public func fm_destroy_session(sessionPtr: UnsafeMutableRawPointer) {
+    // If we have a valid sessionPtr, fm_create_session already verified availability.
+    guard #available(macOS 26.0, iOS 26.0, *) else {
+        preconditionFailure("fm_destroy_session called on unsupported OS - this indicates a bug")
+    }
+
+    Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).release()
+}
+
+// MARK: - Transcript
+
+@_cdecl("fm_get_transcript_json")
+public func fm_get_transcript_json(
+    sessionPtr: UnsafeMutableRawPointer
+) -> UnsafeMutablePointer<CChar>? {
+    // If we have a valid sessionPtr, fm_create_session already verified availability.
+    guard #available(macOS 26.0, iOS 26.0, *) else {
+        preconditionFailure(
+            "fm_get_transcript_json called on unsupported OS - this indicates a bug")
+    }
+
+    let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+
+    guard let jsonData = try? JSONEncoder().encode(session.transcript),
+        let jsonString = String(data: jsonData, encoding: .utf8)
+    else {
+        return nil
+    }
+
+    return strdup(jsonString)
+}
+
+@_cdecl("fm_free_string")
+public func fm_free_string(ptr: UnsafeMutablePointer<CChar>?) {
+    free(ptr)
+}
+
+// MARK: - Task Management for Cancellation
+
+/// Thread-safe storage for active streaming tasks
+private final class TaskManager: @unchecked Sendable {
+    static let shared = TaskManager()
+
+    private var tasks: [UnsafeMutableRawPointer: Task<Void, Never>] = [:]
+    private let lock = NSLock()
+
+    private init() {}
+
+    func store(_ task: Task<Void, Never>, for session: UnsafeMutableRawPointer) {
+        lock.lock()
+        defer { lock.unlock() }
+        tasks[session] = task
+    }
+
+    func remove(for session: UnsafeMutableRawPointer) {
+        lock.lock()
+        defer { lock.unlock() }
+        tasks.removeValue(forKey: session)
+    }
+
+    func cancel(for session: UnsafeMutableRawPointer) {
+        lock.lock()
+        let task = tasks[session]
+        lock.unlock()
+
+        task?.cancel()
+    }
+}
+
+// MARK: - Response Generation
+
+@_cdecl("fm_session_response")
+public func fm_session_response(
+    sessionPtr: UnsafeMutableRawPointer,
+    prompt: UnsafePointer<CChar>,
+    userData: UnsafeMutableRawPointer,
+    onChunk: @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void,
+    onDone: @convention(c) (UnsafeMutableRawPointer?) -> Void,
+    onError: @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
+) {
+    // #available is required by the compiler to access FoundationModels APIs.
+    // If we have a valid sessionPtr, fm_create_session already verified availability,
+    // so this branch should never execute in correct usage.
+    guard #available(macOS 26.0, iOS 26.0, *) else {
+        preconditionFailure("fm_session_response called on unsupported OS - this indicates a bug")
+    }
+
+    let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+    let promptStr = String(cString: prompt)
+
+    let task = Task {
         do {
-            // 6. Create a session
-            let session = LanguageModelSession()
+            let response = try await session.respond(to: promptStr)
 
-            // 7. Use streamResponse to collect tokens (more responsive than respond())
-            // We still deliver all tokens but signal completion only at the end
-            let stream = session.streamResponse(to: promptString)
+            // Check cancellation before sending response
+            if Task.isCancelled {
+                onDone(userData)
+                return
+            }
 
-            var lastText = ""
+            // Send the complete response as a single chunk
+            response.content.withCString { onChunk($0, userData) }
+            onDone(userData)
+        } catch {
+            if !Task.isCancelled {
+                error.localizedDescription.withCString { onError($0, userData) }
+            } else {
+                onDone(userData)
+            }
+        }
 
-            // 8. Iterate through the stream
-            for try await snapshot in stream {
-                // Check if task was cancelled
-                if Task.isCancelled { break }
+        TaskManager.shared.remove(for: sessionPtr)
+    }
 
-                // Extract the string content from the snapshot
-                let currentText = snapshot.content
+    TaskManager.shared.store(task, for: sessionPtr)
+}
 
-                // Extract only the new chunks (delta) since last update
-                let newContent = String(currentText.dropFirst(lastText.count))
-                lastText = currentText
+@_cdecl("fm_session_stream")
+public func fm_session_stream(
+    sessionPtr: UnsafeMutableRawPointer,
+    prompt: UnsafePointer<CChar>,
+    userData: UnsafeMutableRawPointer,
+    onChunk: @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void,
+    onDone: @convention(c) (UnsafeMutableRawPointer?) -> Void,
+    onError: @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
+) {
+    // #available is required by the compiler to access FoundationModels APIs.
+    // If we have a valid sessionPtr, fm_create_session already verified availability,
+    // so this branch should never execute in correct usage.
+    guard #available(macOS 26.0, iOS 26.0, *) else {
+        preconditionFailure("fm_session_stream called on unsupported OS - this indicates a bug")
+    }
 
-                // 9. Call the Rust callback with the new chunk
-                if !newContent.isEmpty {
-                    newContent.withCString { cString in
-                        onChunk?(cString, userData)
-                    }
+    let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+    let promptStr = String(cString: prompt)
+
+    let task = Task {
+        do {
+            let stream = session.streamResponse(to: promptStr)
+
+            var previousContent = ""
+            for try await partialResponse in stream {
+                // Check for cancellation at each iteration
+                if Task.isCancelled {
+                    break
+                }
+
+                // Calculate the delta (new content since last chunk)
+                let currentContent = partialResponse.content
+                if currentContent.count > previousContent.count {
+                    let delta = String(currentContent.dropFirst(previousContent.count))
+                    delta.withCString { onChunk($0, userData) }
+                    previousContent = currentContent
                 }
             }
 
-            // 10. Generation completed successfully
-            onDone?(userData)
-
+            onDone(userData)
         } catch {
-            // 11. Handle any errors during generation
-            let errorMsg = "Generation error: \(error.localizedDescription)"
-            errorMsg.withCString { cString in
-                onError?(cString, userData)
+            // Don't report error if we were cancelled
+            if !Task.isCancelled {
+                error.localizedDescription.withCString { onError($0, userData) }
+            } else {
+                onDone(userData)
             }
         }
+
+        TaskManager.shared.remove(for: sessionPtr)
     }
 
-    // 12. Block until the async work completes
-    semaphore.wait()
-
-    // Lock is automatically released via defer when function returns
+    TaskManager.shared.store(task, for: sessionPtr)
 }
 
-// MARK: - Streaming Response
-/// Starts streaming a response from the Foundation Model
-///
-/// - Parameters:
-///   - prompt: C string with the user's prompt
-///   - userData: Opaque pointer passed to all callbacks
-///   - onChunk: Called for each chunk of text generated
-///   - onDone: Called when streaming completes successfully
-///   - onError: Called if an error occurs (passes error message)
-///
-/// See: https://developer.apple.com/documentation/FoundationModels/LanguageModelSession/streamResponse(to:)
-@_cdecl("fm_start_stream")
-public func fm_start_stream(
-    _ prompt: UnsafePointer<CChar>?,
-    _ userData: UnsafeMutableRawPointer?,
-    _ onChunk: ChunkCallbackWithData?,
-    _ onDone: DoneCallbackWithData?,
-    _ onError: ErrorCallbackWithData?
-) {
-    // 1. Acquire lock to serialize FFI calls
-    streamLock.lock()
-    defer { streamLock.unlock() }
-
-    // 2. Convert C string to Swift String
-    guard let promptCStr = prompt,
-          let promptString = String(utf8String: promptCStr) else {
-        "Invalid prompt".withCString { cString in
-            onError?(cString, userData)
-        }
-        return
-    }
-
-    // 3. Cancel any existing stream
-    streamTask?.cancel()
-
-    // 4. Create semaphore to block until async work completes
-    let semaphore = DispatchSemaphore(value: 0)
-
-    // 5. Start new async task to handle streaming
-    // Note: Availability is checked at session creation time in Rust
-    streamTask = Task {
-        defer { semaphore.signal() }
-
-        do {
-            // 6. Create a session
-            let session = LanguageModelSession()
-
-            // 7. Start streaming
-            let stream = session.streamResponse(to: promptString)
-
-            var lastText = ""
-
-            // 8. Iterate through the stream
-            for try await snapshot in stream {
-                // Check if task was cancelled
-                if Task.isCancelled { break }
-
-                // Extract the string content from the snapshot
-                let currentText = snapshot.content
-
-                // Extract only the new chunks (delta) since last update
-                let newContent = String(currentText.dropFirst(lastText.count))
-                lastText = currentText
-
-                // 9. Call the Rust callback with the new chunk
-                if !newContent.isEmpty {
-                    newContent.withCString { cString in
-                        onChunk?(cString, userData)
-                    }
-                }
-            }
-
-            // 10. Stream completed successfully
-            onDone?(userData)
-
-        } catch {
-            // 11. Handle any errors during streaming
-            let errorMsg = "Streaming error: \(error.localizedDescription)"
-            errorMsg.withCString { cString in
-                onError?(cString, userData)
-            }
-        }
-    }
-
-    // 12. Block until the async work completes
-    semaphore.wait()
-
-    // Lock is automatically released via defer when function returns
-}
-
-// MARK: - Stop Streaming
-/// Cancels the current streaming task
-@_cdecl("fm_stop_stream")
-public func fm_stop_stream() {
-    streamTask?.cancel()
-    streamTask = nil
+@_cdecl("fm_session_cancel_stream")
+public func fm_session_cancel_stream(sessionPtr: UnsafeMutableRawPointer) {
+    TaskManager.shared.cancel(for: sessionPtr)
 }
