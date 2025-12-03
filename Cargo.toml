@@ -16,3 +16,10 @@ categories = ["api-bindings", "os::macos-apis", "science"]
 all-features = true
 default-target = "aarch64-apple-darwin"
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-apple-ios"]
+
+[profile.ci]
+inherits = "dev"
+opt-level = 1
+debug = false
+incremental = true
+codegen-units = 16
