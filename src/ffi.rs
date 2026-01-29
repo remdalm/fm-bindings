@@ -28,7 +28,7 @@ pub type ErrorCallbackWithData = extern "C" fn(*const c_char, *mut c_void);
 // External Swift Functions
 // These functions are implemented in Swift and exported via @_cdecl
 
-#[link(name = "FoundationModelsFFI", kind = "static")]
+// Linking is configured by build.rs via cargo:rustc-link-lib/search directives.
 unsafe extern "C" {
     // =========================================================================
     // Availability
