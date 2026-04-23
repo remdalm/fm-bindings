@@ -134,9 +134,9 @@ cargo build --target x86_64-apple-ios
 
 ### Cross-compilation Notes
 - This crate **must** be built on macOS as it requires the Swift compiler and Apple SDKs
-- The build script automatically detects the target platform and configures the appropriate SDK and library type
-- macOS builds use dynamic libraries (`.dylib`)
-- iOS builds use static libraries (`.a`)
+- The build script automatically detects the target platform and configures the appropriate SDK
+- iOS builds use a static Swift bridge archive (`.a`)
+- macOS builds use a static Swift bridge archive when the app deployment target is 26+; otherwise the crate falls back to a `.dylib` bridge to avoid an `@rpath` dependency on `libswift_Concurrency`
 
 ## License
 

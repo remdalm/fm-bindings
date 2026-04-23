@@ -1,14 +1,42 @@
 // build.rs
-// Compiles Swift library and tells cargo how to link it
-// Supports both macOS and iOS targets
+// Compiles the Swift bridge and tells cargo how to link it.
+// Supports both macOS and iOS targets.
 
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+
+const DEFAULT_MACOS_RUST_DEPLOYMENT_TARGET: &str = "11.0";
 
 fn parse_major_version(version: &str) -> Option<u32> {
     let major = version.trim().split('.').next()?;
     major.parse().ok()
+}
+
+fn rustc_deployment_target(target: &str) -> Option<String> {
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let output = Command::new(rustc)
+        .args(["--print", "deployment-target", "--target", target])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let deployment_target = String::from_utf8_lossy(&output.stdout);
+    let deployment_target = deployment_target.trim();
+    let deployment_target = deployment_target
+        .split('=')
+        .next_back()
+        .unwrap_or(deployment_target)
+        .trim();
+    if deployment_target.is_empty() {
+        None
+    } else {
+        Some(deployment_target.to_string())
+    }
 }
 
 fn main() {
@@ -67,6 +95,24 @@ Set {} to 26.0 or higher.",
 
     println!("cargo:warning=Building for target: {}", target);
 
+    let rust_deployment_target = if is_macos {
+        // rustc defaults Apple Silicon macOS binaries to 11.0 when no deployment
+        // target is set. Mirror that default here so the fallback stays realistic.
+        rustc_deployment_target(&target)
+            .unwrap_or_else(|| DEFAULT_MACOS_RUST_DEPLOYMENT_TARGET.to_string())
+    } else {
+        deployment_target.clone()
+    };
+    let rust_deployment_major = parse_major_version(&rust_deployment_target).unwrap_or(0);
+    let use_static_macos = is_macos && rust_deployment_major >= 26;
+
+    if is_macos && !use_static_macos {
+        println!(
+            "cargo:warning=Rust deployment target is {}. Using a macOS dylib bridge because static linking would resolve libswift_Concurrency via @rpath. Set the app deployment target to 26.0+ to enable the static bridge.",
+            rust_deployment_target
+        );
+    }
+
     // Configure based on platform
     let (lib_name, sdk_name, link_type) = if is_ios_device {
         ("libFoundationModelsFFI.a", Some("iphoneos"), "static")
@@ -76,6 +122,8 @@ Set {} to 26.0 or higher.",
             Some("iphonesimulator"),
             "static",
         )
+    } else if use_static_macos {
+        ("libFoundationModelsFFI.a", Some("macosx"), "static")
     } else if is_macos {
         ("libFoundationModelsFFI.dylib", Some("macosx"), "dylib")
     } else {
@@ -100,7 +148,7 @@ Set {} to 26.0 or higher.",
     let lib_path_str = lib_path
         .to_str()
         .expect("Output path contains invalid UTF-8");
-    let obj_path_str = if is_ios_device || is_ios_simulator {
+    let obj_path_str = if is_ios_device || is_ios_simulator || use_static_macos {
         Some(
             obj_path
                 .to_str()
@@ -138,10 +186,20 @@ Set {} to 26.0 or higher.",
     {
         cmd.arg("-O");
     }
+
+    if use_static_macos {
+        cmd.args([
+            "-Xfrontend",
+            "-disable-autolink-library",
+            "-Xfrontend",
+            "swift_Concurrency",
+        ]);
+    }
+
     cmd.args(["-framework", "Foundation", "-framework", "FoundationModels"]);
 
     // Add SDK flag for Apple SDKs
-    if let Some(sdk_name) = sdk_name {
+    let sdk_path = if let Some(sdk_name) = sdk_name {
         let sdk_output = Command::new("xcrun")
             .args(["--sdk", sdk_name, "--show-sdk-path"])
             .output()
@@ -158,6 +216,27 @@ Set {} to 26.0 or higher.",
             panic!("xcrun returned an empty SDK path for {}.", sdk_name);
         }
         cmd.args(["-sdk", sdk_path]);
+        Some(sdk_path.to_string())
+    } else {
+        None
+    };
+
+    if use_static_macos {
+        let sdk_path = sdk_path
+            .as_deref()
+            .expect("SDK path should be available for macOS builds");
+        let swift_concurrency_stub =
+            PathBuf::from(sdk_path).join("usr/lib/swift/libswift_Concurrency.tbd");
+        let copied_stub = PathBuf::from(&out_dir).join("libFoundationModelsSwiftConcurrency.tbd");
+
+        fs::copy(&swift_concurrency_stub, &copied_stub).unwrap_or_else(|err| {
+            panic!(
+                "Failed to copy Swift concurrency stub from {} to {}: {}",
+                swift_concurrency_stub.display(),
+                copied_stub.display(),
+                err
+            )
+        });
     }
 
     // Add target architecture for iOS/macOS
@@ -197,8 +276,8 @@ Set {} to 26.0 or higher.",
         panic!("Swift compilation failed for target: {}", target);
     }
 
-    // For iOS builds, archive the object into a static library.
-    if is_ios_device || is_ios_simulator {
+    // Archive the Swift object into a static library.
+    if is_ios_device || is_ios_simulator || use_static_macos {
         let obj_path_str = obj_path_str.expect("Object output path contains invalid UTF-8");
 
         let mut libtool = Command::new("xcrun");
@@ -228,4 +307,11 @@ Set {} to 26.0 or higher.",
     // Link system frameworks (available on both iOS and macOS)
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=FoundationModels");
+
+    // Link against a uniquely named copy of Apple's Swift concurrency stub.
+    // The stub's install name points at /usr/lib/swift/libswift_Concurrency.dylib,
+    // which avoids an extra @rpath requirement in downstream app bundles.
+    if use_static_macos {
+        println!("cargo:rustc-link-lib=dylib=FoundationModelsSwiftConcurrency");
+    }
 }
