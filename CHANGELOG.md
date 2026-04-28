@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5] - 2026-04-28
+
+### Changed
+
+- **macOS Swift bridge**: Use a static Swift bridge archive when the Rust deployment target is 26.0 or higher
+- **Swift concurrency linking**: Link static macOS builds against a uniquely named Swift concurrency stub to avoid downstream `@rpath` requirements
+- **Build fallback**: Keep macOS deployment targets below 26.0 on the dylib bridge and emit a build warning explaining how to enable the static bridge
+
 ## [0.1.4] - 2026-01-30
 
 ### Changed
